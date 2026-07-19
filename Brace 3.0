@@ -1,0 +1,205 @@
+import smbus2
+import struct
+import time
+import math
+import csv
+import matplotlib.pyplot as plt
+import pandas as pd
+from collections import deque
+
+# --- CONFIGURATION ---
+ALPHA = 0.80
+LOOP_TIME = 0.02
+SMOOTHING_WINDOW = 10
+
+FLEXION_WEIGHT = 0.6
+VELOCITY_WEIGHT = 0.4
+FLEXION_RISK_THRESHOLD = 30.0
+HIGH_FLEXION_THRESHOLD = 60.0
+VELOCITY_RISK_THRESHOLD = 120.0
+HIGH_VELOCITY_THRESHOLD = 250.0
+
+
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def calculate_risk_index(flexion_angle, angular_velocity):
+    """Return a simple, explainable risk score from knee flexion and movement speed.
+
+    The score is based on two easy-to-explain ideas:
+    - larger knee flexion angles place more strain on the joint
+    - faster motion increases the chance of unstable movement
+
+    This is a heuristic for a school project and should not be treated as medical advice.
+    """
+    if flexion_angle <= 0 and angular_velocity <= 0:
+        return 0.0
+
+    normalized_flexion = clamp(flexion_angle / HIGH_FLEXION_THRESHOLD, 0.0, 1.0)
+    normalized_velocity = clamp(angular_velocity / HIGH_VELOCITY_THRESHOLD, 0.0, 1.0)
+
+    risk_index = (FLEXION_WEIGHT * normalized_flexion) + (VELOCITY_WEIGHT * normalized_velocity)
+    return round(clamp(risk_index, 0.0, 1.0), 3)
+
+
+class Driver:
+    def __init__(self, address):
+        self.address = address
+        try:
+            self.bus = smbus2.SMBus(1)
+            self.bus.write_byte_data(self.address, 0x6b, 0x01)
+        except Exception as e:
+            print(f"Error: Sensor {hex(address)} failed: {e}")
+
+    def get_data(self):
+        try:
+            raw = self.bus.read_i2c_block_data(self.address, 0x3B, 14)
+            v = struct.unpack('>hhhhhhh', bytes(raw))
+            return (v[0]/16384.0, v[1]/16384.0, v[2]/16384.0, v[4]/131.0, v[5]/131.0, v[6]/131.0)
+        except Exception:
+            return (0, 0, 0, 0, 0, 0)
+
+
+class IMUsensor:
+    def __init__(self, address: int, name: str):
+        self.name = name
+        self.sensor = Driver(address)
+        self.angle_filtered = 0
+        self.gyro_offset = 0
+        self.baseline = 0
+        self.last_time = time.time()
+        self.av = 0
+        self.max_flexion = 0
+        self.av_max = 0
+
+    def update(self):
+        ax, ay, az, gx, gy, gz = self.sensor.get_data()
+        self.av = gy
+
+        acc_angle = math.degrees(math.atan2(math.sqrt(ax**2 + az**2), ay))
+
+        dt = time.time() - self.last_time
+        self.last_time = time.time()
+
+        actual_gyro_rate = gx - self.gyro_offset
+        self.angle_filtered = ALPHA * (self.angle_filtered + actual_gyro_rate * dt) + (1 - ALPHA) * acc_angle
+
+    def calibrate(self):
+        print(f"Calibrating {self.name}... Stay still.")
+        sums = 0
+        for _ in range(100):
+            sums += self.sensor.get_data()[3]
+            time.sleep(0.01)
+        self.gyro_offset = sums / 100
+
+    def set_baseline(self):
+        self.baseline = self.angle_filtered
+
+    def get_tilt(self):
+        return self.angle_filtered - self.baseline
+
+
+def main():
+    thigh = IMUsensor(0x68, "Thigh")
+    shank = IMUsensor(0x69, "Shank")
+
+    max_flexion = 0
+    av_max = 0
+
+    thigh.calibrate()
+    shank.calibrate()
+
+    print("\n--- CLINICAL ZEROING ---")
+    print("Stand straight. ZEROING IN 5 SECONDS...")
+    time.sleep(5)
+
+    for _ in range(100):
+        thigh.update()
+        shank.update()
+        time.sleep(0.01)
+
+    thigh.set_baseline()
+    shank.set_baseline()
+    print(">>> SYSTEM ACTIVE <<<")
+
+    history = deque(maxlen=200000)
+    smoothing_list = []
+    start_t = time.time()
+
+    try:
+        while True:
+            thigh.update()
+            shank.update()
+
+            raw_val = (abs(thigh.get_tilt() - shank.get_tilt())) * 1.3
+            diff_av = abs(thigh.av - shank.av)
+
+            smoothing_list.append(raw_val)
+            if len(smoothing_list) > SMOOTHING_WINDOW:
+                smoothing_list.pop(0)
+            clean_angle = sum(smoothing_list) / len(smoothing_list)
+
+            if clean_angle > max_flexion:
+                max_flexion = clean_angle
+            if diff_av > av_max:
+                av_max = diff_av
+
+            elapsed = time.time() - start_t
+            risk_index = calculate_risk_index(clean_angle, diff_av)
+
+            if risk_index < 0.30:
+                risk_level = "SAFE"
+            elif risk_index < 0.60:
+                risk_level = "CAUTION"
+            elif risk_index < 0.85:
+                risk_level = "HIGH"
+            else:
+                risk_level = "CRITICAL"
+
+            history.append([
+                round(clean_angle, 2),
+                round(elapsed, 2),
+                round(diff_av, 2),
+                round(max_flexion, 2),
+                round(av_max, 2),
+                round(risk_index, 2),
+                risk_level,
+            ])
+
+            time.sleep(LOOP_TIME)
+
+            graphing_values = {
+                "Time": elapsed,
+                "Angle": clean_angle,
+                "Diff_av": diff_av,
+                "Max_flexion": max_flexion,
+                "Av_max": av_max,
+                "Risk Index": risk_index,
+                "Risk Level": risk_level,
+            }
+    except KeyboardInterrupt:
+        print("\nSaving to knee_data.csv and generating graph...")
+        with open('knee_data.csv', 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Time', 'Angle', 'Diff_av', 'Max_flexion', 'Av_max', 'Risk Index', 'Risk Level'])
+            writer.writerows(history)
+
+        try:
+            df = pd.read_csv('knee_data.csv')
+            plt.figure(figsize=(10, 5))
+            plt.plot(df['Time'], df['Angle'], color='green', label='Knee Flexion')
+            plt.axhline(y=30, color='red', linestyle='--', label='ACL Injury Risk Threshold')
+            plt.title("ACL Fatigue Analysis - HOSA Project")
+            plt.ylabel("Flexion (Degrees)")
+            plt.xlabel("Time (s)")
+            plt.legend()
+            plt.grid(True, alpha=0.2)
+            plt.savefig('acl_report.png')
+            print("Graph successful: acl_report.png")
+        except Exception as e:
+            print(f"CSV saved, but graphing failed: {e}")
+
+
+if __name__ == "__main__":
+    main()
