@@ -5,11 +5,16 @@ import math
 import csv
 import matplotlib.pyplot as plt
 import pandas as pd
+from collections import deque
 
 # --- CONFIGURATION ---
 ALPHA = 0.80         # Balanced for slow squats and fast landing jumps
 LOOP_TIME = 0.02     # 50Hz clinical standard
 SMOOTHING_WINDOW = 10 # Removes "jitter" from the knee brace fabric
+A = 0.001  #  filter coefficient for angular velocity
+B = 0.001 #  filter coefficient for flextion angle
+max_flexion = 0
+av_max = 0
 
 class Driver:
     def __init__(self, address):
@@ -37,6 +42,8 @@ class IMUsensor:
         self.baseline = 0
         self.last_time = time.time()
         self.av=0
+        self.max_flexion = 0
+        self.av_max = 0
 
     def update(self):
         ax, ay, az, gx, gy, gz = self.sensor.get_data()
@@ -72,6 +79,9 @@ def main():
     thigh = IMUsensor(0x68, "Thigh")
     shank = IMUsensor(0x69, "Shank")
 
+    max_flexion = 0
+    av_max = 0
+
     thigh.calibrate()
     shank.calibrate()
 
@@ -85,9 +95,8 @@ def main():
     thigh.set_baseline(); shank.set_baseline()
     print(">>> SYSTEM ACTIVE <<<")
 
-    history = []
+    history = deque(maxlen=200000)
     smoothing_list = []
-    max_flexion = 0
     start_t = time.time()
 
     try:
@@ -97,27 +106,43 @@ def main():
 
             # Differential Logic: Finding the hinge opening
             raw_val = (abs(thigh.get_tilt() - shank.get_tilt())) * 1.3
-            Diff_av = abs(thing.av-shank.av)
+            Diff_av = abs(thigh.av - shank.av)
             
             smoothing_list.append(raw_val)
             if len(smoothing_list) > SMOOTHING_WINDOW: smoothing_list.pop(0)
             clean_angle = sum(smoothing_list) / len(smoothing_list)
 
             if clean_angle > max_flexion: max_flexion = clean_angle
+            if Diff_av > av_max: av_max = Diff_av
 
             elapsed = time.time() - start_t
-            history.append([round(elapsed, 2), round(clean_angle, 2)])
+            history.append([round(clean_angle, 2), round(elapsed, 2),round(Diff_av, 2), round(max_flexion, 2), round(av_max, 2), round(graphing_values["Risk Index"], 2), graphing_values["Risk Level"]])
 
-            # Judge Feedback
-            status = "!! RISK !!" if clean_angle < 30 and elapsed > 2 else "SAFE"
-            print(f"Angle: {clean_angle:5.1f}° | Max: {max_flexion:5.1f}° | {status}", end='\r')
+            # Risk Equation: α·(v/vmax) + β·(1-f/fmax)
+            if av_max > 0 and max_flexion > 0:
+                risk_index = A * (Diff_av / (av_max + 0.000001)) + B * (1 - clean_angle / (max_flexion + 0.000001))
+            else:
+                risk_index = 0
+            
+            risk_level = "CRITICAL" if risk_index > 0.8 else ("HIGH" if risk_index > 0.5 else "SAFE")
+            #print(f"Angle: {clean_angle:5.1f}° | Risk: {risk_index:.2f} | {risk_level}", end='\r')
             time.sleep(LOOP_TIME)
+           # print(f"Angle: {clean_angle:5.1f}° | Risk: {risk_index:.2f} | Time: {elapsed:.2f}  )  | {risk_level}", end='\r')
+            Graphing_values = {
+                "Time": elapsed,
+                "Angle": clean_angle,
+                "Diff_av": Diff_av,
+                "Max_flexion": max_flexion,
+                "Av_max": av_max,
+                "Risk Index": risk_index,
+                "Risk Level": risk_level
 
+            }
     except KeyboardInterrupt:
         print(f"\nSaving to knee_data.csv and generating graph...")
         with open('knee_data.csv', 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['Time', 'Angle'])
+            writer.writerow(['Time', 'Angle', 'Diff_av', 'Max_flexion', 'Av_max', 'Risk Index', 'Risk Level'])
             writer.writerows(history)
         
         # Automatic Graphing for the Poster
