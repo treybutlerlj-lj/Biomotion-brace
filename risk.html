@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>ACL Risk Assessment</h2>
+
+<div class="controls">
+    <label for="threshold">Risk Threshold Flag: <span id="val">70</span>%</label>
+    <input type="range" id="threshold" min="0" max="100" value="70">
+</div>
+
+<div class="chart-container">
+    <canvas id="riskChart"></canvas>
+</div>
+
+<div id="alert-box" class="alert hidden">
+    ⚠️ WARNING: Movement patterns exceed set risk threshold.
+</div>
+
+<script>
+const riskChart = new Chart(document.getElementById('riskChart'), {
+    type: 'line',
+    data: {
+        labels: [],
+        datasets: [{
+            label: 'Calculated Risk Index (%)',
+            data: [],
+            borderColor: '#ef4444',
+            backgroundColor: 'rgba(239,68,68,0.15)',
+            tension: 0.2,
+            fill: true
+        }]
+    },
+    options: {
+        responsive: true,
+        animation: false,
+        scales: { y: { beginAtZero: true, max: 100 } }
+    }
+});
+
+const slider = document.getElementById('threshold');
+const output = document.getElementById('val');
+const alertBox = document.getElementById('alert-box');
+
+function refreshRisk() {
+    fetch('/api/telemetry')
+        .then(res => res.json())
+        .then(data => {
+            const history = data.history || [];
+            const labels = history.map(point => Number(point[0]).toFixed(1));
+            const values = history.map(point => Number(point[5]) * 100);
+
+            riskChart.data.labels = labels;
+            riskChart.data.datasets[0].data = values;
+            riskChart.update();
+
+            const threshold = Number(slider.value);
+            output.textContent = threshold;
+            const isHazardous = values.some(v => v > threshold);
+            alertBox.classList.toggle('hidden', !isHazardous);
+        });
+}
+
+slider.oninput = function() {
+    const val = this.value;
+    output.textContent = val;
+    const values = riskChart.data.datasets[0].data || [];
+    riskChart.data.datasets[0].backgroundColor = values.map(v => v > val ? '#ef4444' : '#3b82f6');
+    riskChart.update();
+    alertBox.classList.toggle('hidden', !values.some(v => v > val));
+};
+
+refreshRisk();
+setInterval(refreshRisk, 1000);
+</script>
+{% endblock %}
