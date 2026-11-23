@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Kinematic Motion Analysis</h2>
+<div class="chart-container">
+    <canvas id="flexionChart"></canvas>
+</div>
+<div class="chart-container">
+    <canvas id="velocityChart"></canvas>
+</div>
+
+<script>
+const flexionChart = new Chart(document.getElementById('flexionChart'), {
+    type: 'line',
+    data: {
+        labels: [],
+        datasets: [{
+            label: 'Knee Flexion Angle (Degrees)',
+            data: [],
+            borderColor: '#2563eb',
+            tension: 0.3,
+            fill: false
+        }]
+    },
+    options: {
+        responsive: true,
+        animation: false,
+        scales: { y: { beginAtZero: false } }
+    }
+});
+
+const velocityChart = new Chart(document.getElementById('velocityChart'), {
+    type: 'line',
+    data: {
+        labels: [],
+        datasets: [{
+            label: 'Angular Velocity (°/s)',
+            data: [],
+            borderColor: '#10b981',
+            tension: 0.3,
+            fill: false
+        }]
+    },
+    options: {
+        responsive: true,
+        animation: false,
+        scales: { y: { beginAtZero: false } }
+    }
+});
+
+async function loadMotionData() {
+    const response = await fetch('/api/telemetry');
+    const data = await response.json();
+    const history = data.history || [];
+
+    const labels = history.map(point => Number(point[0]).toFixed(1));
+    const angleData = history.map(point => Number(point[1]));
+    const velocityData = history.map(point => Number(point[2]));
+
+    flexionChart.data.labels = labels;
+    flexionChart.data.datasets[0].data = angleData;
+    velocityChart.data.labels = labels;
+    velocityChart.data.datasets[0].data = velocityData;
+    flexionChart.update();
+    velocityChart.update();
+}
+
+loadMotionData();
+setInterval(loadMotionData, 1000);
+</script>
+{% endblock %}
