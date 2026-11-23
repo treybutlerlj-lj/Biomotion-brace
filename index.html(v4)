@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<header>
+    <h1>Patient Overview</h1>
+    <p class="subtitle">Session: Post-Op Week 6 | Patient ID: 0922</p>
+    <div class="status-row">
+        <span id="sensor-state" class="status-badge">Initializing...</span>
+        <span id="last-updated" class="time-label">Waiting for live data...</span>
+    </div>
+</header>
+
+<div class="card-grid">
+    <a href="/motion" class="card live-card">
+        <h3>Knee Flexion</h3>
+        <p id="angle-stat" class="stat">0°</p>
+        <p id="angle-trend" class="trend positive">Monitoring...</p>
+    </a>
+
+    <a href="/motion" class="card live-card">
+        <h3>Avg. Velocity</h3>
+        <p id="velocity-stat" class="stat">0°/s</p>
+        <p id="velocity-trend" class="trend">Monitoring...</p>
+    </a>
+
+    <a href="/risk" class="card highlight live-card">
+        <h3>ACL Risk Index</h3>
+        <p id="risk-stat" class="stat">SAFE</p>
+        <p id="risk-trend" class="trend">0.00 / 1.00</p>
+    </a>
+</div>
+
+<script>
+const sensorState = document.getElementById('sensor-state');
+const lastUpdated = document.getElementById('last-updated');
+const angleStat = document.getElementById('angle-stat');
+const velocityStat = document.getElementById('velocity-stat');
+const riskStat = document.getElementById('risk-stat');
+const angleTrend = document.getElementById('angle-trend');
+const velocityTrend = document.getElementById('velocity-trend');
+const riskTrend = document.getElementById('risk-trend');
+
+async function updateDashboard() {
+    try {
+        const response = await fetch('/api/telemetry');
+        const data = await response.json();
+
+        angleStat.textContent = `${data.angle ?? 0}°`;
+        velocityStat.textContent = `${data.velocity ?? 0}°/s`;
+        riskStat.textContent = data.risk_level || 'SAFE';
+        riskTrend.textContent = `${data.risk_index ?? 0} / 1.00`;
+
+        angleTrend.textContent = `Max flexion: ${data.max_flexion ?? 0}°`;
+        velocityTrend.textContent = `Peak velocity: ${data.av_max ?? 0}°/s`;
+        sensorState.textContent = data.sensor_state || 'initializing';
+        sensorState.classList.toggle('warning', (data.risk_level || 'SAFE') !== 'SAFE');
+
+        const timestamp = new Date();
+        lastUpdated.textContent = `Updated ${timestamp.toLocaleTimeString()}`;
+    } catch (error) {
+        sensorState.textContent = 'Sensor offline';
+        sensorState.classList.add('warning');
+    }
+}
+
+updateDashboard();
+setInterval(updateDashboard, 1000);
+</script>
+{% endblock %}
